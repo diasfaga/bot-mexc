@@ -1,100 +1,105 @@
-import os
-import time
+from flask import Flask, request
 import requests
 import pandas as pd
-import telebot
-from flask import Flask, request
-import threading
+import time
 
-# Configurações iniciais
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-API_KEY = os.getenv('API_KEY')
-API_SECRET = os.getenv('API_SECRET')
-
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
+BOT_TOKEN = '7787547636:AAH58KZPuNb90FWVGx3EQQsCpvrMQieMq3s'
+BASE_URL = f'https://api.telegram.org/bot{BOT_TOKEN}'
+chat_id = None
+
 symbols = [
-    '1000PEPEUSDT', 'WLDUSDT', 'RNDRUSDT', 'TNSRUSDT', 'BOMEUSDT', 'ENAUSDT', 'MNTUSDT', 'TNSRUSDT',
-    'WIFUSDT', 'PYTHUSDT', 'GRTUSDT', 'MAVIAUSDT', 'IDUSDT', 'SAGAUSDT', 'ONDOUSDT', 'SUIUSDT',
-    'XAIUSDT', 'STRKUSDT', 'ARUSDT', 'JUPUSDT', 'ACEUSDT', 'METISUSDT', 'FETUSDT', 'PENDLEUSDT',
-    'LQTYUSDT', 'HIFIUSDT', 'AIDOGEUSDT', 'NTRNUSDT', 'TNSRUSDT', 'MANTAUSDT', 'ALTUSDT', 'TAOUSDT',
-    'PORTALUSDT', 'LUNAUSDT', 'OMNIUSDT', 'FLOKIUSDT', 'GALAUSDT', 'IMXUSDT', 'RDNTUSDT', 'DOGEUSDT',
-    'COTIUSDT', 'AKTUSDT', 'GALUSDT', 'BLURUSDT', 'RNDRUSDT', 'MAGICUSDT', 'CANTOUSDT', 'DYDXUSDT',
-    'KASUSDT', 'BIGTIMEUSDT'
+    'SAGAUSDT', 'ACEUSDT', 'PORTALUSDT', 'HIFIUSDT', 'ALTUSDT', 'ONIUSDT',
+    'IMXUSDT', 'FLOKIUSDT', 'MAGICUSDT', 'DYDXUSDT', 'RNDRUSDT'
 ]
 
-intervalos = ['5m', '15m']
+def send_telegram_alert(message):
+    global chat_id
+    if chat_id:
+        url = f'{BASE_URL}/sendMessage'
+        payload = {'chat_id': chat_id, 'text': message}
+        response = requests.post(url, json=payload)
+        if not response.ok:
+            print(f'Erro ao enviar alerta: {response.text}')
+    else:
+        print('chat_id ainda não registrado.')
 
-def buscar_candles(symbol, interval, limit=50):
+def get_klines(symbol, interval, limit=100):
     url = f'https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
-    try:
-        response = requests.get(url)
-        data = response.json()
-        df = pd.DataFrame(data)
-        return df
-    except Exception as e:
-        print(f"Erro ao buscar candles de {symbol}: {e}")
+    response = requests.get(url)
+    if response.ok:
+        df = pd.DataFrame(response.json())
+        if df.shape[1] >= 6:
+            df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume'] + list(range(6, df.shape[1]))
+            df['close'] = df['close'].astype(float)
+            return df
+        else:
+            print(f'Dados inválidos para {symbol}')
+            return None
+    else:
+        print(f'Erro ao buscar candles de {symbol}: {response.text}')
         return None
 
-def calcular_rsi(df, period=14):
-    delta = df[4].astype(float).diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
+def calculate_rsi(df, period=14):
+    delta = df['close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def verificar_sinais():
-    while True:
-        for symbol in symbols:
-            for intervalo in intervalos:
-                df = buscar_candles(symbol, intervalo)
-                if df is None or len(df) < 20:
-                    continue
+def analyze_symbol(symbol):
+    df_5m = get_klines(symbol, '5m')
+    df_15m = get_klines(symbol, '15m')
+    
+    if df_5m is not None and df_15m is not None:
+        rsi_5m = calculate_rsi(df_5m).iloc[-1]
+        rsi_15m = calculate_rsi(df_15m).iloc[-1]
+        
+        # Sinais 5m
+        if rsi_5m <= 30:
+            send_telegram_alert(f'🟢 SINAL DE COMPRA (5m) - {symbol} - RSI: {round(rsi_5m,2)}')
+        elif rsi_5m >= 70:
+            send_telegram_alert(f'🔴 SINAL DE VENDA (5m) - {symbol} - RSI: {round(rsi_5m,2)}')
 
-                rsi = calcular_rsi(df)
-                if rsi.iloc[-1] <= 30:
-                    enviar_alerta(f"🟢 SINAL DE COMPRA ({intervalo}) - {symbol} - RSI: {rsi.iloc[-1]:.2f}")
-                elif rsi.iloc[-1] >= 70:
-                    enviar_alerta(f"🔴 SINAL DE VENDA ({intervalo}) - {symbol} - RSI: {rsi.iloc[-1]:.2f}")
+        # Sinais 15m
+        if rsi_15m <= 30:
+            send_telegram_alert(f'🟢 SINAL DE COMPRA (15m) - {symbol} - RSI: {round(rsi_15m,2)}')
+        elif rsi_15m >= 70:
+            send_telegram_alert(f'🔴 SINAL DE VENDA (15m) - {symbol} - RSI: {round(rsi_15m,2)}')
 
-        time.sleep(300)  # Espera 5 minutos
+def verify_signals():
+    print('🔎 Verificando sinais...')
+    for symbol in symbols:
+        try:
+            analyze_symbol(symbol)
+        except Exception as e:
+            print(f'Erro ao analisar {symbol}: {e}')
 
-def enviar_alerta(mensagem):
-    print(mensagem)
-    try:
-        bot.send_message(chat_id="@SeuCanalOuChatID", text=mensagem)
-    except Exception as e:
-        print(f"Erro ao enviar alerta no Telegram: {e}")
-
-# Botões do Bot
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, "✅ Bot iniciado! Analisando altcoins...")
-
-@bot.message_handler(commands=['status'])
-def status(message):
-    bot.send_message(message.chat.id, "✅ Bot está ativo e rodando!")
-
-@bot.message_handler(commands=['parar'])
-def parar(message):
-    bot.send_message(message.chat.id, "🛑 Parando bot (não implementado ainda via comando)")
-
-# Webhook para Railway
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return 'ok', 200
+    global chat_id
+    data = request.get_json()
 
-# Inicialização
-def iniciar_bot():
-    threading.Thread(target=verificar_sinais).start()
+    if 'message' in data:
+        chat_id = data['message']['chat']['id']
+        text = data['message'].get('text', '')
+
+        if text.lower() == '/start':
+            send_telegram_alert('✅ Bot iniciado com sucesso!')
+        elif text.lower() == '/status':
+            send_telegram_alert('✅ Bot está ativo!')
+
+    return {'ok': True}
+
+@app.route('/')
+def index():
+    return 'Bot online!'
 
 if __name__ == '__main__':
-    iniciar_bot()
-    app.run(host="0.0.0.0", port=8080)
+    while True:
+        verify_signals()
+        time.sleep(300)  # 5 minutos
