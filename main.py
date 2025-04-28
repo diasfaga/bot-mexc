@@ -1,37 +1,40 @@
+from flask import Flask, request
+import requests
 import os
-import threading
-from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-bot_mode = 'off'
-waiting_for_confirmation = False
+# Pegando o token do Telegram pelas variáveis de ambiente
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-def send_telegram_message(message):
-    pass  # Aqui seria a função de envio para o Telegram
+# URL da API do Telegram
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-def log_event(message):
-    print(message)
-
-@app.route('/', methods=['POST'])
-def telegram_webhook():
-    global bot_mode, waiting_for_confirmation
+# Rota para o Webhook (importante usar apenas /<token>)
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
     data = request.get_json()
-    if 'message' in data:
-        text = data['message']['text']
-        if text == '/modo_auto':
-            bot_mode = 'auto'
-            send_telegram_message("✅ Modo AUTOMÁTICO ativado!")
-            log_event("Modo AUTOMÁTICO ativado")
-        elif text == '/modo_semi':
-            bot_mode = 'semi'
-            send_telegram_message("✅ Modo SEMI-AUTOMÁTICO ativado!")
-            log_event("Modo SEMI-AUTOMÁTICO ativado")
-        elif text == '/parar':
-            bot_mode = 'off'
-            send_telegram_message("🛑 Bot parado!")
-            log_event("Bot parado!")
-    return jsonify({"ok": True})
+
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
+
+        if text == "/start":
+            send_message(chat_id, "Bot iniciado! ✅")
+        elif text == "/status":
+            send_message(chat_id, "Bot está rodando! 🚀")
+        else:
+            send_message(chat_id, "Comando não reconhecido. 🤖")
+
+    return {"ok": True}
+
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    requests.post(url, json=payload)
 
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
