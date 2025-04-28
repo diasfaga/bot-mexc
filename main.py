@@ -1,44 +1,37 @@
 import os
 import threading
 from flask import Flask, request
-import requests
 
 app = Flask(__name__)
 
-bot_mode = "off"
+bot_mode = "auto"
 waiting_for_confirmation = False
-latest_signal = None
 
-api_key = os.getenv('API_KEY')
-api_secret = os.getenv('API_SECRET')
-telegram_token = os.getenv('TELEGRAM_TOKEN')
-telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
-
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-    payload = {
-        "chat_id": telegram_chat_id,
-        "text": text
-    }
-    requests.post(url, json=payload)
-
-@app.route(f"/{telegram_token}", methods=["POST"])
+@app.route(f"/{os.environ['TELEGRAM_TOKEN']}", methods=["POST"])
 def telegram_webhook():
-    global bot_mode, waiting_for_confirmation
-    data = request.get_json()
+    data = request.json
     if 'message' in data:
-        text = data['message']['text']
+        text = data['message'].get('text', '')
+        global bot_mode, waiting_for_confirmation
         if text == '/modo_auto':
             bot_mode = 'auto'
-            send_telegram_message('✅ Bot em modo AUTOMÁTICO!')
         elif text == '/modo_semi':
             bot_mode = 'semi'
-            send_telegram_message('✅ Bot em modo SEMI-AUTOMÁTICO!')
         elif text == '/parar':
             bot_mode = 'off'
-            send_telegram_message('🛑 Bot PARADO!')
+    elif 'callback_query' in data:
+        callback_data = data['callback_query']['data']
+        if callback_data == 'confirm_entry' and waiting_for_confirmation:
+            waiting_for_confirmation = False
+        elif callback_data == 'cancel_entry':
+            waiting_for_confirmation = False
     return 'ok'
 
+def bot_loop():
+    while True:
+        pass  # Aqui ficaria sua lógica de operação
+
 if __name__ == "__main__":
+    threading.Thread(target=bot_loop).start()
     port = int(os.environ.get('PORT', 5000))
-    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": port}).start()
+    app.run(host='0.0.0.0', port=port)
