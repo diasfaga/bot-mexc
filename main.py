@@ -2,122 +2,99 @@ import os
 import time
 import requests
 import pandas as pd
+import telebot
 from flask import Flask, request
+import threading
 
-app = Flask(__name__)
-
+# Configurações iniciais
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 API_KEY = os.getenv('API_KEY')
 API_SECRET = os.getenv('API_SECRET')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-MEXC_BASE_URL = 'https://api.mexc.com'
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
 
-ALTCOINS = [
-    "1000PEPEUSDT", "1000SATSUSDT", "AGIXUSDT", "APTUSDT", "ARBUSDT", "ASTRUSDT",
-    "BLURUSDT", "C98USDT", "CFXUSDT", "CHZUSDT", "CKBUSDT", "CROUSDT", "DASHUSDT",
-    "DOGEUSDT", "DYDXUSDT", "ENAUSDT", "ENSUSDT", "FILUSDT", "FLOKIUSDT", "FTMUSDT",
-    "GALAUSDT", "GMXUSDT", "ICPUSDT", "INJUSDT", "JOEUSDT", "LDOUSDT", "LINAUSDT",
-    "LINKUSDT", "LTCUSDT", "MANAUSDT", "MASKUSDT", "NEARUSDT", "OPUSDT", "PEPEUSDT",
-    "RNDRUSDT", "RPLUSDT", "SANDUSDT", "SFPUSDT", "STXUSDT", "SUIUSDT", "THETAUSDT",
-    "TWTUSDT", "VETUSDT", "WLDUSDT", "WOOUSDT", "XLMUSDT", "XRPUSDT", "XTMUSDT",
-    "ZILUSDT", "ZRXUSDT",
-    "FARTCOINUSDT", "VIRTUALUSDT"
+symbols = [
+    '1000PEPEUSDT', 'WLDUSDT', 'RNDRUSDT', 'TNSRUSDT', 'BOMEUSDT', 'ENAUSDT', 'MNTUSDT', 'TNSRUSDT',
+    'WIFUSDT', 'PYTHUSDT', 'GRTUSDT', 'MAVIAUSDT', 'IDUSDT', 'SAGAUSDT', 'ONDOUSDT', 'SUIUSDT',
+    'XAIUSDT', 'STRKUSDT', 'ARUSDT', 'JUPUSDT', 'ACEUSDT', 'METISUSDT', 'FETUSDT', 'PENDLEUSDT',
+    'LQTYUSDT', 'HIFIUSDT', 'AIDOGEUSDT', 'NTRNUSDT', 'TNSRUSDT', 'MANTAUSDT', 'ALTUSDT', 'TAOUSDT',
+    'PORTALUSDT', 'LUNAUSDT', 'OMNIUSDT', 'FLOKIUSDT', 'GALAUSDT', 'IMXUSDT', 'RDNTUSDT', 'DOGEUSDT',
+    'COTIUSDT', 'AKTUSDT', 'GALUSDT', 'BLURUSDT', 'RNDRUSDT', 'MAGICUSDT', 'CANTOUSDT', 'DYDXUSDT',
+    'KASUSDT', 'BIGTIMEUSDT'
 ]
 
-def calcular_rsi(data, period=14):
-    delta = data['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+intervalos = ['5m', '15m']
 
-def buscar_candles(symbol, interval, limit=100):
-    url = f"{MEXC_BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+def buscar_candles(symbol, interval, limit=50):
+    url = f'https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
     try:
         response = requests.get(url)
-        response.raise_for_status()
         data = response.json()
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "number_of_trades",
-            "taker_buy_base", "taker_buy_quote", "ignore"
-        ])
-        df['close'] = pd.to_numeric(df['close'])
+        df = pd.DataFrame(data)
         return df
     except Exception as e:
         print(f"Erro ao buscar candles de {symbol}: {e}")
         return None
 
-def detectar_sinal(df, symbol, interval):
-    if df is None or df.empty:
-        return None
+def calcular_rsi(df, period=14):
+    delta = df[4].astype(float).diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-    df['rsi'] = calcular_rsi(df)
+def verificar_sinais():
+    while True:
+        for symbol in symbols:
+            for intervalo in intervalos:
+                df = buscar_candles(symbol, intervalo)
+                if df is None or len(df) < 20:
+                    continue
 
-    ultimo_rsi = df['rsi'].iloc[-1]
-    ultimo_close = df['close'].iloc[-1]
-    penultimo_close = df['close'].iloc[-2]
+                rsi = calcular_rsi(df)
+                if rsi.iloc[-1] <= 30:
+                    enviar_alerta(f"🟢 SINAL DE COMPRA ({intervalo}) - {symbol} - RSI: {rsi.iloc[-1]:.2f}")
+                elif rsi.iloc[-1] >= 70:
+                    enviar_alerta(f"🔴 SINAL DE VENDA ({intervalo}) - {symbol} - RSI: {rsi.iloc[-1]:.2f}")
 
-    sinal = None
+        time.sleep(300)  # Espera 5 minutos
 
-    if ultimo_rsi < 30:
-        sinal = f"🟢 {symbol} ({interval}) RSI ({round(ultimo_rsi,2)}) - Sobrevendido! (Possível COMPRA)"
-    elif ultimo_rsi > 70:
-        sinal = f"🔴 {symbol} ({interval}) RSI ({round(ultimo_rsi,2)}) - Sobrecomprado! (Possível VENDA)"
-    elif ultimo_close > penultimo_close:
-        sinal = f"🚀 {symbol} ({interval}) Rompimento pra CIMA detectado!"
-    elif ultimo_close < penultimo_close:
-        sinal = f"⚡ {symbol} ({interval}) Rompimento pra BAIXO detectado!"
-
-    return sinal
-
-def enviar_telegram(mensagem):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": mensagem
-    }
+def enviar_alerta(mensagem):
+    print(mensagem)
     try:
-        requests.post(url, json=payload)
+        bot.send_message(chat_id="@SeuCanalOuChatID", text=mensagem)
     except Exception as e:
-        print(f"Erro ao enviar mensagem no Telegram: {e}")
+        print(f"Erro ao enviar alerta no Telegram: {e}")
 
-@app.route('/', methods=['POST', 'GET'])
+# Botões do Bot
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "✅ Bot iniciado! Analisando altcoins...")
+
+@bot.message_handler(commands=['status'])
+def status(message):
+    bot.send_message(message.chat.id, "✅ Bot está ativo e rodando!")
+
+@bot.message_handler(commands=['parar'])
+def parar(message):
+    bot.send_message(message.chat.id, "🛑 Parando bot (não implementado ainda via comando)")
+
+# Webhook para Railway
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
-    if request.method == 'POST':
-        update = request.get_json()
-        if 'message' in update and 'text' in update['message']:
-            texto = update['message']['text']
-            chat_id = update['message']['chat']['id']
+    json_str = request.get_data().decode('UTF-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return 'ok', 200
 
-            if texto.lower() == '/start':
-                enviar_telegram("✅ Bot iniciado com sucesso!")
-            elif texto.lower() == '/status':
-                enviar_telegram("✅ Bot está ativo!")
-        return 'ok'
-    else:
-        return 'Bot rodando.'
-
-def checar_sinais():
-    print("🔎 Carregando altcoins...")
-    enviar_telegram("🔎 Carregando 50 melhores altcoins...")
-    for symbol in ALTCOINS:
-        for timeframe in ['5m', '15m']:
-            df = buscar_candles(symbol, timeframe, limit=100)
-            sinal = detectar_sinal(df, symbol, timeframe)
-            if sinal:
-                enviar_telegram(sinal)
-            time.sleep(0.5)  # Pequena pausa para evitar flood de requisições
+# Inicialização
+def iniciar_bot():
+    threading.Thread(target=verificar_sinais).start()
 
 if __name__ == '__main__':
-    from threading import Thread
-
-    def loop_verificacao():
-        while True:
-            checar_sinais()
-            time.sleep(300)  # 5 minutos (300 segundos)
-
-    Thread(target=loop_verificacao).start()
-    app.run(host='0.0.0.0', port=8080)
+    iniciar_bot()
+    app.run(host="0.0.0.0", port=8080)
